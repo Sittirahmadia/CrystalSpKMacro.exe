@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <windows.h>
+#include <mmsystem.h>
 #include <string>
 #include <cstdint>
 #include <chrono>

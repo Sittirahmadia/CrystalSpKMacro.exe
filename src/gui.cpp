@@ -6,6 +6,8 @@
 #include "input.h"
 
 #include <windows.h>
+#include <windowsx.h>
+#include <mmsystem.h>
 #include <dwmapi.h>
 #include <string>
 #include <vector>
@@ -103,11 +105,16 @@ static const char* CATEGORIES[] = {"crystal", "sword", "mace", "cart", "uhc"};
 static const wchar_t* CAT_LABELS[] = {L"\u25C6 Crystal", L"\u2694 Sword", L"\u2692 Mace", L"\u26CF Cart", L"\u2665 UHC"};
 static const int CAT_COUNT = 5;
 
+// ── Mode Constants ──────────────────────────────────────────────────────────
+enum MacroMode { MODE_SINGLE = 0, MODE_HOLD = 1, MODE_LOOP = 2 };
+static const wchar_t* MODE_NAMES[] = { L"Single", L"Hold", L"Loop" };
+
 // ── Per-Macro Config Entry ──────────────────────────────────────────────────
 struct MacroEntry {
     bool active = false;
     int hotkey = 0;           // VK code for trigger
     int delay = 30;
+    int mode = MODE_SINGLE;   // 0=single, 1=hold, 2=loop
     std::map<std::string, std::string> slots; // slot key → key string ("4","5","None")
 };
 
@@ -218,6 +225,7 @@ static void saveConfig() {
         f << def.id << ".active=" << (e.active ? 1 : 0) << "\n";
         f << def.id << ".hotkey=" << e.hotkey << "\n";
         f << def.id << ".delay=" << e.delay << "\n";
+        f << def.id << ".mode=" << e.mode << "\n";
         for (auto& sd : def.slots) {
             auto it = e.slots.find(sd.key);
             std::string val = (it != e.slots.end()) ? it->second : "None";
@@ -252,6 +260,7 @@ static void loadConfig() {
             if (field == "active") g_config[i].active = (rhs == "1");
             else if (field == "hotkey") g_config[i].hotkey = std::atoi(rhs.c_str());
             else if (field == "delay") g_config[i].delay = std::max(0, std::atoi(rhs.c_str()));
+            else if (field == "mode") g_config[i].mode = std::max(0, std::min(2, std::atoi(rhs.c_str())));
             else g_config[i].slots[field] = rhs;
             break;
         }
@@ -322,7 +331,7 @@ static int calcContentHeight() {
     for (int i = 0; i < MACRO_COUNT; i++) {
         if (std::string(CATEGORIES[g_currentCat]) != MACROS[i].category) continue;
         bool exp = (i == g_expandedMacro);
-        int fields = 2 + (int)MACROS[i].slots.size(); // hotkey + delay + slots
+        int fields = 3 + (int)MACROS[i].slots.size(); // hotkey + delay + mode + slots
         int ch = exp ? CARD_H + 2 + fields * (FIELD_H + 3) + 4 : CARD_H;
         total += ch + CARD_GAP;
     }
@@ -404,7 +413,7 @@ static void render(HDC hdc, int clientW, int clientH) {
         const auto& def = MACROS[mi];
         const auto& entry = g_config[mi];
         bool exp = (mi == g_expandedMacro);
-        int fields = 2 + (int)def.slots.size();
+        int fields = 3 + (int)def.slots.size();
         int cardH = exp ? CARD_H + 2 + fields * (FIELD_H + 3) + 4 : CARD_H;
 
         // Skip if fully off-screen
@@ -478,6 +487,19 @@ static void render(HDC hdc, int clientW, int clientH) {
                     fy += FIELD_H + 3;
                 }
 
+                // Mode field (click to cycle: Single → Hold → Loop)
+                {
+                    std::wstring val = MODE_NAMES[entry.mode];
+                    drawText(hdc, L"Mode", cx + 10, fy + 2, 80, FIELD_H, g_fontField, C_TEXT_G);
+                    int fx = cx + cw - FIELD_W - 8;
+                    fillRect(hdc, fx, fy, FIELD_W, FIELD_H, C_FIELD);
+                    drawBorder(hdc, fx, fy, FIELD_W, FIELD_H, C_BORDER);
+                    COLORREF modeCol = (entry.mode == MODE_HOLD) ? C_GREEN : (entry.mode == MODE_LOOP) ? C_ACCENT : C_TEXT;
+                    drawText(hdc, val.c_str(), fx + 4, fy, FIELD_W - 8, FIELD_H,
+                             g_fontMono, modeCol, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                    fy += FIELD_H + 3;
+                }
+
                 // Slot fields
                 for (int si = 0; si < (int)def.slots.size(); si++) {
                     const auto& sd = def.slots[si];
@@ -529,171 +551,180 @@ static void render(HDC hdc, int clientW, int clientH) {
     }
 }
 
-// ── Macro Execution ─────────────────────────────────────────────────────────
+// ── Macro Thread Data ────────────────────────────────────────────────────────
+struct MacroThreadData {
+    int idx;
+    int delay;
+    std::string macroId;
+    std::map<std::string, std::string> slots;
+};
+
+static uint16_t getSlotVKFromMap(const std::map<std::string, std::string>& slots, const std::string& key) {
+    auto it = slots.find(key);
+    if (it == slots.end()) return 0;
+    return charToVK(it->second);
+}
+
+static void runOneMacroSequence(const MacroThreadData& td) {
+    int d = std::max(20, td.delay); // minimum 20ms for MC to register slot switches
+
+    if (td.macroId == "sa") {
+        uint16_t anchor = getSlotVKFromMap(td.slots, "anchor");
+        uint16_t glow = getSlotVKFromMap(td.slots, "glowstone");
+        uint16_t expl = getSlotVKFromMap(td.slots, "explode");
+        uint16_t det = expl ? expl : anchor;
+        keyPress(anchor);    preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(glow);      preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(det);       preciseSleep(d); rClick();
+    }
+    else if (td.macroId == "da") {
+        uint16_t anchor = getSlotVKFromMap(td.slots, "anchor");
+        uint16_t glow = getSlotVKFromMap(td.slots, "glowstone");
+        uint16_t expl = getSlotVKFromMap(td.slots, "explode");
+        uint16_t det = expl ? expl : anchor;
+        // === First anchor: place → charge → explode ===
+        keyPress(anchor);    preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(glow);      preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(det);       preciseSleep(d); rClick(); preciseSleep(d);
+        // === Second anchor: place at explosion spot → charge → explode ===
+        keyPress(anchor);    preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(glow);      preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(det);       preciseSleep(d); rClick();
+    }
+    else if (td.macroId == "ap") {
+        uint16_t anchor = getSlotVKFromMap(td.slots, "anchor");
+        uint16_t glow = getSlotVKFromMap(td.slots, "glowstone");
+        uint16_t expl = getSlotVKFromMap(td.slots, "explode");
+        uint16_t pearl = getSlotVKFromMap(td.slots, "pearl");
+        uint16_t det = expl ? expl : anchor;
+        keyPress(anchor);    preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(glow);      preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(det);       preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(pearl);     preciseSleep(d); rClick();
+    }
+    else if (td.macroId == "hc") {
+        uint16_t obs = getSlotVKFromMap(td.slots, "obsidian");
+        uint16_t crys = getSlotVKFromMap(td.slots, "crystal");
+        int fd = std::max(10, d / 2);
+        keyPress(obs);  preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(crys); preciseSleep(d);
+        rClick(); preciseSleep(fd); lClick(); preciseSleep(fd);
+        rClick(); preciseSleep(fd); lClick();
+    }
+    else if (td.macroId == "kp") {
+        uint16_t pearl = getSlotVKFromMap(td.slots, "pearl");
+        uint16_t ret = getSlotVKFromMap(td.slots, "ret");
+        keyPress(pearl); preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(ret);
+    }
+    else if (td.macroId == "idh") {
+        uint16_t totem = getSlotVKFromMap(td.slots, "totem");
+        uint16_t swap = getSlotVKFromMap(td.slots, "swap");
+        uint16_t inv = getSlotVKFromMap(td.slots, "inv");
+        keyPress(totem); preciseSleep(d);
+        if (swap) { keyPress(swap); preciseSleep(d); }
+        if (inv) keyPress(inv);
+    }
+    else if (td.macroId == "oht") {
+        uint16_t totem = getSlotVKFromMap(td.slots, "totem");
+        uint16_t swap = getSlotVKFromMap(td.slots, "swap");
+        keyPress(totem); preciseSleep(d); keyPress(swap);
+    }
+    else if (td.macroId == "sr") {
+        uint16_t wKey = charToVK("w");
+        lClick(); preciseSleep(d);
+        keyPress(wKey, 15); preciseSleep(15); keyPress(wKey, 15);
+    }
+    else if (td.macroId == "asb") {
+        uint16_t axe = getSlotVKFromMap(td.slots, "axe");
+        uint16_t sword = getSlotVKFromMap(td.slots, "sword");
+        keyPress(axe); preciseSleep(d); lClick(); preciseSleep(d); keyPress(sword);
+    }
+    else if (td.macroId == "ls") {
+        uint16_t sword = getSlotVKFromMap(td.slots, "sword");
+        uint16_t spear = getSlotVKFromMap(td.slots, "spear");
+        keyPress(sword, SLOT_HOLD_MS); preciseSleep(2);
+        slotLClick(spear, SLOT_HOLD_MS); preciseSleep(8);
+        keyPress(sword, SLOT_HOLD_MS); preciseSleep(4); keyPress(sword, SLOT_HOLD_MS);
+    }
+    else if (td.macroId == "es") {
+        uint16_t elytra = getSlotVKFromMap(td.slots, "elytra");
+        uint16_t ret = getSlotVKFromMap(td.slots, "ret");
+        keyPress(elytra, SLOT_HOLD_MS); preciseSleep(d);
+        rClick(); preciseSleep(std::max(12, d)); keyPress(ret, SLOT_HOLD_MS);
+    }
+    else if (td.macroId == "pc") {
+        uint16_t pearl = getSlotVKFromMap(td.slots, "pearl");
+        uint16_t wind = getSlotVKFromMap(td.slots, "wind");
+        keyPress(pearl); rClick(); preciseSleep(d); keyPress(wind); rClick();
+    }
+    else if (td.macroId == "ss") {
+        uint16_t axe = getSlotVKFromMap(td.slots, "axe");
+        uint16_t mace = getSlotVKFromMap(td.slots, "mace");
+        keyPress(axe); lClick(); preciseSleep(d); keyPress(mace); lClick();
+    }
+    else if (td.macroId == "bs") {
+        uint16_t mace = getSlotVKFromMap(td.slots, "mace");
+        uint16_t sword = getSlotVKFromMap(td.slots, "sword");
+        keyPress(mace); lClick(); preciseSleep(d); keyPress(sword);
+    }
+    else if (td.macroId == "ic") {
+        uint16_t rail = getSlotVKFromMap(td.slots, "rail");
+        uint16_t bow = getSlotVKFromMap(td.slots, "bow");
+        uint16_t cart = getSlotVKFromMap(td.slots, "cart");
+        keyPress(rail); preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(bow);  preciseSleep(d);
+        mouseDown(true); preciseSleep(150); mouseUp(true); preciseSleep(d);
+        keyPress(cart); preciseSleep(5); rClick();
+    }
+    else if (td.macroId == "xb") {
+        uint16_t rail = getSlotVKFromMap(td.slots, "rail");
+        uint16_t cart = getSlotVKFromMap(td.slots, "cart");
+        uint16_t fns = getSlotVKFromMap(td.slots, "fns");
+        uint16_t xbow = getSlotVKFromMap(td.slots, "crossbow");
+        keyPress(rail); preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(cart); preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(fns);  preciseSleep(d); rClick(); preciseSleep(d);
+        keyPress(xbow); preciseSleep(d); rClick();
+    }
+    else if (td.macroId == "dr") {
+        uint16_t bucket = getSlotVKFromMap(td.slots, "bucket");
+        keyPress(bucket); preciseSleep(d); rClick();
+    }
+    else if (td.macroId == "lw") {
+        uint16_t lava = getSlotVKFromMap(td.slots, "lava");
+        uint16_t cobweb = getSlotVKFromMap(td.slots, "cobweb");
+        keyPress(lava); preciseSleep(d); rClick(); preciseSleep(d);
+        rClick(); preciseSleep(d);
+        keyPress(cobweb); preciseSleep(d); rClick();
+    }
+    else if (td.macroId == "la") {
+        uint16_t lava = getSlotVKFromMap(td.slots, "lava");
+        keyPress(lava); preciseSleep(d); rClick();
+    }
+}
+
+static DWORD WINAPI macroThreadProc(LPVOID param) {
+    MacroThreadData* td = (MacroThreadData*)param;
+    timeBeginPeriod(1);
+    preciseSleep(150);
+    runOneMacroSequence(*td);
+    timeEndPeriod(1);
+    delete td;
+    g_macroRunning = false;
+    return 0;
+}
+
 static void executeMacro(int idx) {
-    if (g_macroRunning.exchange(true)) return; // prevent double-fire
-    const auto& def = MACROS[idx];
-    const auto& e = g_config[idx];
-    int d = e.delay;
-
-    auto getSlotVK = [&](const std::string& key) -> uint16_t {
-        auto it = e.slots.find(key);
-        if (it == e.slots.end()) return 0;
-        return charToVK(it->second);
-    };
-
-    std::thread([=, &def]() {
-        timeBeginPeriod(1);
-        preciseSleep(150);
-
-        if (def.id == "sa") {
-            uint16_t anchor = getSlotVK("anchor");
-            uint16_t glow = getSlotVK("glowstone");
-            uint16_t expl = getSlotVK("explode");
-            uint16_t det = expl ? expl : anchor;
-            keyPress(anchor);    preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(glow);      preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(det);       preciseSleep(d); rClick();
-        }
-        else if (def.id == "da") {
-            uint16_t anchor = getSlotVK("anchor");
-            uint16_t glow = getSlotVK("glowstone");
-            uint16_t expl = getSlotVK("explode");
-            uint16_t det = expl ? expl : anchor;
-            // 1. Place first anchor
-            keyPress(anchor);    preciseSleep(d); rClick(); preciseSleep(d);
-            // 2. Charge first with glowstone
-            keyPress(glow);      preciseSleep(d); rClick(); preciseSleep(d);
-            // 3. Anchor again → explode 1st + airplace 2nd
-            keyPress(anchor);    preciseSleep(d); rClick(); preciseSleep(d);
-            // 4. Charge second with glowstone
-            keyPress(glow);      preciseSleep(d); rClick(); preciseSleep(d);
-            // 5. Detonate second
-            keyPress(det);       preciseSleep(d); rClick();
-        }
-        else if (def.id == "ap") {
-            uint16_t anchor = getSlotVK("anchor");
-            uint16_t glow = getSlotVK("glowstone");
-            uint16_t expl = getSlotVK("explode");
-            uint16_t pearl = getSlotVK("pearl");
-            uint16_t det = expl ? expl : anchor;
-            keyPress(anchor);    preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(glow);      preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(det);       preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(pearl);     preciseSleep(d); rClick();
-        }
-        else if (def.id == "hc") {
-            uint16_t obs = getSlotVK("obsidian");
-            uint16_t crys = getSlotVK("crystal");
-            int fd = std::max(10, d / 2);
-            keyPress(obs);  preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(crys); preciseSleep(d);
-            rClick(); preciseSleep(fd); lClick(); preciseSleep(fd);
-            rClick(); preciseSleep(fd); lClick();
-        }
-        else if (def.id == "kp") {
-            uint16_t pearl = getSlotVK("pearl");
-            uint16_t ret = getSlotVK("ret");
-            keyPress(pearl); preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(ret);
-        }
-        else if (def.id == "idh") {
-            uint16_t totem = getSlotVK("totem");
-            uint16_t swap = getSlotVK("swap");
-            uint16_t inv = getSlotVK("inv");
-            keyPress(totem); preciseSleep(d);
-            if (swap) { keyPress(swap); preciseSleep(d); }
-            if (inv) keyPress(inv);
-        }
-        else if (def.id == "oht") {
-            uint16_t totem = getSlotVK("totem");
-            uint16_t swap = getSlotVK("swap");
-            keyPress(totem); preciseSleep(d);
-            keyPress(swap);
-        }
-        else if (def.id == "sr") {
-            uint16_t wKey = charToVK("w");
-            lClick(); preciseSleep(d);
-            keyPress(wKey, 15); preciseSleep(15);
-            keyPress(wKey, 15);
-        }
-        else if (def.id == "asb") {
-            uint16_t axe = getSlotVK("axe");
-            uint16_t sword = getSlotVK("sword");
-            keyPress(axe); preciseSleep(d); lClick(); preciseSleep(d);
-            keyPress(sword);
-        }
-        else if (def.id == "ls") {
-            uint16_t sword = getSlotVK("sword");
-            uint16_t spear = getSlotVK("spear");
-            keyPress(sword, SLOT_HOLD_MS); preciseSleep(2);
-            slotLClick(spear, SLOT_HOLD_MS); preciseSleep(8);
-            keyPress(sword, SLOT_HOLD_MS); preciseSleep(4);
-            keyPress(sword, SLOT_HOLD_MS);
-        }
-        else if (def.id == "es") {
-            uint16_t elytra = getSlotVK("elytra");
-            uint16_t ret = getSlotVK("ret");
-            keyPress(elytra, SLOT_HOLD_MS); preciseSleep(d);
-            rClick(); preciseSleep(std::max(12, d));
-            keyPress(ret, SLOT_HOLD_MS);
-        }
-        else if (def.id == "pc") {
-            uint16_t pearl = getSlotVK("pearl");
-            uint16_t wind = getSlotVK("wind");
-            keyPress(pearl); rClick(); preciseSleep(d);
-            keyPress(wind);  rClick();
-        }
-        else if (def.id == "ss") {
-            uint16_t axe = getSlotVK("axe");
-            uint16_t mace = getSlotVK("mace");
-            keyPress(axe);  lClick(); preciseSleep(d);
-            keyPress(mace); lClick();
-        }
-        else if (def.id == "bs") {
-            uint16_t mace = getSlotVK("mace");
-            uint16_t sword = getSlotVK("sword");
-            keyPress(mace); lClick(); preciseSleep(d);
-            keyPress(sword);
-        }
-        else if (def.id == "ic") {
-            uint16_t rail = getSlotVK("rail");
-            uint16_t bow = getSlotVK("bow");
-            uint16_t cart = getSlotVK("cart");
-            keyPress(rail); preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(bow);  preciseSleep(d);
-            mouseDown(true); preciseSleep(150); mouseUp(true); preciseSleep(d);
-            keyPress(cart); preciseSleep(5); rClick();
-        }
-        else if (def.id == "xb") {
-            uint16_t rail = getSlotVK("rail");
-            uint16_t cart = getSlotVK("cart");
-            uint16_t fns = getSlotVK("fns");
-            uint16_t xbow = getSlotVK("crossbow");
-            keyPress(rail); preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(cart); preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(fns);  preciseSleep(d); rClick(); preciseSleep(d);
-            keyPress(xbow); preciseSleep(d); rClick();
-        }
-        else if (def.id == "dr") {
-            uint16_t bucket = getSlotVK("bucket");
-            keyPress(bucket); preciseSleep(d); rClick();
-        }
-        else if (def.id == "lw") {
-            uint16_t lava = getSlotVK("lava");
-            uint16_t cobweb = getSlotVK("cobweb");
-            keyPress(lava);   preciseSleep(d); rClick(); preciseSleep(d);
-            rClick();         preciseSleep(d);
-            keyPress(cobweb); preciseSleep(d); rClick();
-        }
-        else if (def.id == "la") {
-            uint16_t lava = getSlotVK("lava");
-            keyPress(lava); preciseSleep(d); rClick();
-        }
-
-        timeEndPeriod(1);
-        g_macroRunning = false;
-    }).detach();
+    if (g_macroRunning.exchange(true)) return;
+    MacroThreadData* td = new MacroThreadData();
+    td->idx = idx;
+    td->delay = g_config[idx].delay;
+    td->macroId = MACROS[idx].id;
+    td->slots = g_config[idx].slots;
+    HANDLE h = CreateThread(nullptr, 0, macroThreadProc, td, 0, nullptr);
+    if (h) CloseHandle(h);
+    else { delete td; g_macroRunning = false; }
 }
 
 // ── Click Hit-Test and Handling ─────────────────────────────────────────────
@@ -742,7 +773,7 @@ static void handleClick(int mx, int my, int clientW, int clientH) {
         if (MACROS[mi].category != std::string(CATEGORIES[g_currentCat])) continue;
         const auto& def = MACROS[mi];
         bool exp = (mi == g_expandedMacro);
-        int fields = 2 + (int)def.slots.size();
+        int fields = 3 + (int)def.slots.size();
         int cardH = exp ? CARD_H + 2 + fields * (FIELD_H + 3) + 4 : CARD_H;
 
         if (my >= cy && my < cy + cardH && mx >= cx && mx < cx + cw) {
@@ -784,6 +815,15 @@ static void handleClick(int mx, int my, int clientW, int clientH) {
                     g_editingDelay = true;
                     g_editDelayIdx = mi;
                     g_delayBuf = std::to_string(g_config[mi].delay);
+                    InvalidateRect(g_hwnd, nullptr, FALSE);
+                    return;
+                }
+                fy += FIELD_H + 3;
+
+                // Mode field (click to cycle)
+                if (mx >= fx && mx < fx + FIELD_W && my >= fy && my < fy + FIELD_H) {
+                    g_config[mi].mode = (g_config[mi].mode + 1) % 3;
+                    saveConfig();
                     InvalidateRect(g_hwnd, nullptr, FALSE);
                     return;
                 }
