@@ -115,6 +115,11 @@ static MacroEntry g_config[MACRO_COUNT];
 static int g_currentPage = 0;
 static std::atomic<bool> g_macroRunning{false};
 static HWND g_hwnd = nullptr;
+static HHOOK g_mouseHook = nullptr;
+
+// Mouse button encoding (negative values, same as mod)
+// -2 = Mouse2 (right), -3 = Mouse3 (middle), -4 = Mouse4 (side back), -5 = Mouse5 (side forward)
+static bool isMouse(int hk) { return hk < 0; }
 
 // Focus lock
 static bool g_focusLock = true;
@@ -152,6 +157,11 @@ static std::map<int, int> g_registeredHK;
 static const char* VKName(int vk) {
     static char buf[32];
     if (vk == 0) return "None";
+    // Mouse buttons (negative encoding)
+    if (vk == -2) return "Mouse2";
+    if (vk == -3) return "Mouse3";
+    if (vk == -4) return "Mouse4";
+    if (vk == -5) return "Mouse5";
     if (vk >= '0' && vk <= '9') { buf[0] = (char)vk; buf[1] = 0; return buf; }
     if (vk >= 'A' && vk <= 'Z') { buf[0] = (char)vk; buf[1] = 0; return buf; }
     switch (vk) {
@@ -270,6 +280,11 @@ static void registerAllHotkeys() {
     unregisterAllHotkeys();
     for (int i = 0; i < MACRO_COUNT; i++) {
         if (!g_config[i].active || g_config[i].hotkey == 0) continue;
+        // Mouse buttons are handled by the low-level hook, not RegisterHotKey
+        if (isMouse(g_config[i].hotkey)) {
+            g_registeredHK[i] = g_config[i].hotkey; // track it but don't register
+            continue;
+        }
         if (RegisterHotKey(g_hwnd, HK_BASE + i, 0, g_config[i].hotkey))
             g_registeredHK[i] = g_config[i].hotkey;
     }
@@ -309,63 +324,80 @@ static uint16_t getSlotVK(const MacroEntry& e, const std::string& key) {
 static void runMacroSequence(int idx) {
     const auto& d = MACROS[idx];
     const auto& e = g_config[idx];
-    int delay = std::max(20, e.delay);
+    int userDelay = std::max(1, e.delay);
+    // switchGap: time between keyPress (slot switch) and rClick.
+    // Must be >= 50ms (1 MC game tick) so Minecraft registers the slot change.
+    int switchGap = std::max(50, userDelay);
+    // stepGap: time between rClick and next keyPress (between steps).
+    int stepGap = std::max(30, userDelay);
 
     if (d.id == "sa") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
-        keyPress(a); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(g); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(det); preciseSleep(delay); rClick();
+        // 1. Switch to anchor → wait for MC to register → place
+        keyPress(a); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // 2. Switch to glowstone → wait → charge
+        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // 3. Switch to detonate slot → wait → explode
+        keyPress(det); preciseSleep(switchGap); rClick();
     }
     else if (d.id == "da") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
-        // 1st: place → charge → detonate
-        keyPress(a); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(g); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(det); preciseSleep(delay); rClick(); preciseSleep(delay);
-        // 2nd: place at blast spot → charge → detonate
-        keyPress(a); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(g); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(det); preciseSleep(delay); rClick();
+        // === FIRST ANCHOR ===
+        // 1. Place anchor
+        keyPress(a);   preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // 2. Charge with glowstone
+        keyPress(g);   preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // 3. Detonate (switch to anchor/explode slot → rclick charged anchor)
+        keyPress(det); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // === SECOND ANCHOR (at explosion spot) ===
+        // 4. Place anchor immediately (already on anchor slot if det==a, otherwise switch)
+        if (det != a) { keyPress(a); preciseSleep(switchGap); }
+        rClick(); preciseSleep(stepGap);
+        // 5. Charge with glowstone
+        keyPress(g);   preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // 6. Detonate second
+        keyPress(det); preciseSleep(switchGap); rClick();
     }
     else if (d.id == "ap") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode"), p = getSlotVK(e,"pearl");
         uint16_t det = x ? x : a;
-        keyPress(a); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(g); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(det); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(p); preciseSleep(delay); rClick();
+        // SA sequence
+        keyPress(a);   preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        keyPress(g);   preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        keyPress(det); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // Pearl throw
+        keyPress(p);   preciseSleep(switchGap); rClick();
     }
     else if (d.id == "hc") {
         uint16_t obs = getSlotVK(e,"obsidian"), crys = getSlotVK(e,"crystal");
-        int fd = std::max(10, delay/2);
-        keyPress(obs); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(crys); preciseSleep(delay);
+        int fd = std::max(20, userDelay / 2);
+        keyPress(obs); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        keyPress(crys); preciseSleep(switchGap);
         rClick(); preciseSleep(fd); lClick(); preciseSleep(fd);
         rClick(); preciseSleep(fd); lClick();
     }
     else if (d.id == "kp") {
         uint16_t pearl = getSlotVK(e,"pearl"), ret = getSlotVK(e,"ret");
-        keyPress(pearl); preciseSleep(delay); rClick(); preciseSleep(delay); keyPress(ret);
+        keyPress(pearl); preciseSleep(switchGap); rClick(); preciseSleep(stepGap); keyPress(ret);
     }
     else if (d.id == "idh") {
         uint16_t totem = getSlotVK(e,"totem"), swap = getSlotVK(e,"swap"), inv = getSlotVK(e,"inv");
-        keyPress(totem); preciseSleep(delay);
-        if (swap) { keyPress(swap); preciseSleep(delay); }
+        keyPress(totem); preciseSleep(switchGap);
+        if (swap) { keyPress(swap); preciseSleep(switchGap); }
         if (inv) keyPress(inv);
     }
     else if (d.id == "oht") {
-        keyPress(getSlotVK(e,"totem")); preciseSleep(delay); keyPress(getSlotVK(e,"swap"));
+        keyPress(getSlotVK(e,"totem")); preciseSleep(switchGap); keyPress(getSlotVK(e,"swap"));
     }
     else if (d.id == "sr") {
         uint16_t w = charToVK("w");
-        lClick(); preciseSleep(delay); keyPress(w,15); preciseSleep(15); keyPress(w,15);
+        lClick(); preciseSleep(stepGap); keyPress(w,15); preciseSleep(15); keyPress(w,15);
     }
     else if (d.id == "asb") {
         uint16_t axe = getSlotVK(e,"axe"), sw = getSlotVK(e,"sword");
-        keyPress(axe); preciseSleep(delay); lClick(); preciseSleep(delay); keyPress(sw);
+        keyPress(axe); preciseSleep(switchGap); lClick(); preciseSleep(stepGap); keyPress(sw);
     }
     else if (d.id == "ls") {
         uint16_t sw = getSlotVK(e,"sword"), sp = getSlotVK(e,"spear");
@@ -375,39 +407,39 @@ static void runMacroSequence(int idx) {
     }
     else if (d.id == "es") {
         uint16_t el = getSlotVK(e,"elytra"), ret = getSlotVK(e,"ret");
-        keyPress(el,SLOT_HOLD_MS); preciseSleep(delay); rClick(); preciseSleep(std::max(12,delay)); keyPress(ret,SLOT_HOLD_MS);
+        keyPress(el,SLOT_HOLD_MS); preciseSleep(switchGap); rClick(); preciseSleep(std::max(12,stepGap)); keyPress(ret,SLOT_HOLD_MS);
     }
     else if (d.id == "pc") {
         uint16_t pearl = getSlotVK(e,"pearl"), wind = getSlotVK(e,"wind");
-        keyPress(pearl); rClick(); preciseSleep(delay); keyPress(wind); rClick();
+        keyPress(pearl); preciseSleep(switchGap); rClick(); preciseSleep(stepGap); keyPress(wind); preciseSleep(switchGap); rClick();
     }
     else if (d.id == "ss") {
-        keyPress(getSlotVK(e,"axe")); lClick(); preciseSleep(delay); keyPress(getSlotVK(e,"mace")); lClick();
+        keyPress(getSlotVK(e,"axe")); preciseSleep(switchGap); lClick(); preciseSleep(stepGap); keyPress(getSlotVK(e,"mace")); preciseSleep(switchGap); lClick();
     }
     else if (d.id == "bs") {
-        keyPress(getSlotVK(e,"mace")); lClick(); preciseSleep(delay); keyPress(getSlotVK(e,"sword"));
+        keyPress(getSlotVK(e,"mace")); preciseSleep(switchGap); lClick(); preciseSleep(stepGap); keyPress(getSlotVK(e,"sword"));
     }
     else if (d.id == "ic") {
         uint16_t rail=getSlotVK(e,"rail"), bow=getSlotVK(e,"bow"), cart=getSlotVK(e,"cart");
-        keyPress(rail); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(bow); preciseSleep(delay);
-        mouseDown(true); preciseSleep(150); mouseUp(true); preciseSleep(delay);
-        keyPress(cart); preciseSleep(5); rClick();
+        keyPress(rail); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        keyPress(bow); preciseSleep(switchGap);
+        mouseDown(true); preciseSleep(150); mouseUp(true); preciseSleep(stepGap);
+        keyPress(cart); preciseSleep(switchGap); rClick();
     }
     else if (d.id == "xb") {
         uint16_t rail=getSlotVK(e,"rail"), cart=getSlotVK(e,"cart"), fns=getSlotVK(e,"fns"), xbow=getSlotVK(e,"crossbow");
-        keyPress(rail); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(cart); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(fns); preciseSleep(delay); rClick(); preciseSleep(delay);
-        keyPress(xbow); preciseSleep(delay); rClick();
+        keyPress(rail); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        keyPress(cart); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        keyPress(fns);  preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        keyPress(xbow); preciseSleep(switchGap); rClick();
     }
-    else if (d.id == "dr") { keyPress(getSlotVK(e,"bucket")); preciseSleep(delay); rClick(); }
+    else if (d.id == "dr") { keyPress(getSlotVK(e,"bucket")); preciseSleep(switchGap); rClick(); }
     else if (d.id == "lw") {
         uint16_t lava=getSlotVK(e,"lava"), cob=getSlotVK(e,"cobweb");
-        keyPress(lava); preciseSleep(delay); rClick(); preciseSleep(delay);
-        rClick(); preciseSleep(delay); keyPress(cob); preciseSleep(delay); rClick();
+        keyPress(lava); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        rClick(); preciseSleep(stepGap); keyPress(cob); preciseSleep(switchGap); rClick();
     }
-    else if (d.id == "la") { keyPress(getSlotVK(e,"lava")); preciseSleep(delay); rClick(); }
+    else if (d.id == "la") { keyPress(getSlotVK(e,"lava")); preciseSleep(switchGap); rClick(); }
 }
 
 static DWORD WINAPI macroThread(LPVOID param) {
@@ -955,6 +987,52 @@ static void CleanupRenderTarget() {
 //  WINDOW PROCEDURE
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  LOW-LEVEL MOUSE HOOK — detects side buttons (Mouse3/4/5) globally
+// ═══════════════════════════════════════════════════════════════════════════
+
+static LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0) {
+        MSLLHOOKSTRUCT* ms = (MSLLHOOKSTRUCT*)lParam;
+        int mouseBtn = 0; // will be set to negative encoding
+
+        if (wParam == WM_MBUTTONDOWN) {
+            mouseBtn = -3; // Mouse3 (middle)
+        } else if (wParam == WM_XBUTTONDOWN) {
+            WORD xBtn = HIWORD(ms->mouseData);
+            if (xBtn == XBUTTON1) mouseBtn = -4; // Mouse4 (side back)
+            else if (xBtn == XBUTTON2) mouseBtn = -5; // Mouse5 (side forward)
+        }
+
+        if (mouseBtn != 0) {
+            // Capture mode — bind this mouse button
+            if (g_capturing && g_captureIdx >= 0) {
+                if (g_captureSlot == -1) {
+                    g_config[g_captureIdx].hotkey = mouseBtn;
+                } else {
+                    // Mouse buttons as slot keys — store as "Mouse4" etc.
+                    auto& sv = g_config[g_captureIdx].slotValues;
+                    auto& sd = MACROS[g_captureIdx].slots[g_captureSlot];
+                    sv[sd.key] = VKName(mouseBtn); // "Mouse4", "Mouse5" etc.
+                }
+                g_capturing = false;
+                registerAllHotkeys();
+                saveConfig();
+                return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
+            }
+
+            // Check if any macro uses this mouse button as hotkey
+            for (int i = 0; i < MACRO_COUNT; i++) {
+                if (g_config[i].active && g_config[i].hotkey == mouseBtn) {
+                    executeMacro(i);
+                    break;
+                }
+            }
+        }
+    }
+    return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
+}
+
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
@@ -975,6 +1053,7 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
     case WM_DESTROY:
+        if (g_mouseHook) { UnhookWindowsHookEx(g_mouseHook); g_mouseHook = nullptr; }
         unregisterAllHotkeys();
         saveConfig();
         PostQuitMessage(0);
@@ -1031,6 +1110,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     // Load config and register hotkeys
     loadConfig();
     registerAllHotkeys();
+
+    // Install low-level mouse hook for side button support
+    g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, hInstance, 0);
 
     // Main loop
     ImVec4 clearColor = ImVec4(0.04f, 0.05f, 0.08f, 1.00f);
