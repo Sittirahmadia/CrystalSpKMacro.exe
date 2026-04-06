@@ -20,7 +20,12 @@ endif()
 # Common definitions
 add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-# All macro executables
+# ── GUI Application (CrystalSpKMacro.exe) ────────────────────────────────────
+add_executable(CrystalSpKMacro WIN32 src/gui.cpp)
+target_include_directories(CrystalSpKMacro PRIVATE src)
+target_link_libraries(CrystalSpKMacro PRIVATE user32 gdi32 dwmapi kernel32 winmm)
+
+# ── Individual macro executables ─────────────────────────────────────────────
 set(MACROS sa da ap hc kp idh oht asb sr ls es pc ss bs ic xb dr lw la)
 
 foreach(MACRO ${MACROS})

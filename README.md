@@ -1,8 +1,21 @@
 # CrystalSpK Macro Executables
 
-Standalone `.exe` macro tools for Minecraft crystal PvP. Each macro is a separate executable that runs once and exits.
+Standalone `.exe` macro tools for Minecraft crystal PvP. Includes a **GUI launcher** (`CrystalSpKMacro.exe`) and individual macro executables.
 
-## Macros
+## GUI Launcher
+
+`CrystalSpKMacro.exe` — Dark-themed, compact, scrollable Win32 GUI application.
+
+- **5 category tabs**: Crystal, Sword, Mace, Cart, UHC
+- **Scrollable macro list** with expand/collapse cards
+- **Hotkey binding** — click the field, press any key
+- **Slot key configuration** — per-macro key assignments
+- **Delay editing** — click to type custom delay (ms)
+- **Toggle on/off** — enable/disable each macro
+- **Global hotkeys** — trigger macros from any window
+- **Auto-save** — settings saved to `crystalspk.ini`
+
+## Individual Macros
 
 | Exe | Name | Usage |
 |-----|------|-------|
@@ -26,19 +39,14 @@ Standalone `.exe` macro tools for Minecraft crystal PvP. Each macro is a separat
 | `lw.exe` | Lava Web | `lw.exe <lavaKey> <cobwebKey> <delay>` |
 | `la.exe` | Lava | `la.exe <lavaKey> <delay>` |
 
-## Keys
-
-Use single characters for hotbar keys: `1`-`9`, `0`  
-Named keys: `space`, `shift`, `ctrl`, `alt`, `tab`, `enter`  
-Letters: `a`-`z`  
-Use `None` to skip optional keys.
-
-## Examples
+## Double Anchor Sequence
 
 ```
-sa.exe 4 5 None 50
-da.exe 4 5 None 48
-hc.exe 4 5 30
+1. anchor → rclick    (place 1st anchor)
+2. glowstone → rclick (charge 1st)
+3. anchor → rclick    (explode 1st + airplace 2nd)
+4. glowstone → rclick (charge 2nd)
+5. explodeSlot → rclick (detonate 2nd)
 ```
 
 ## Building
@@ -49,3 +57,5 @@ Requires Visual Studio or MinGW with CMake:
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
+
+Output: `build/Release/CrystalSpKMacro.exe` + individual macro `.exe` files.
