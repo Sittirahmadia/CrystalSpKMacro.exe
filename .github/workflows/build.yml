@@ -1,0 +1,33 @@
+name: Build Macro Executables
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Collect executables
+        run: |
+          mkdir artifacts
+          Get-ChildItem -Path build -Recurse -Filter "*.exe" | Copy-Item -Destination artifacts/
+        shell: pwsh
+
+      - name: Upload Executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrystalSpK-Macros
+          path: artifacts/*.exe
+          if-no-files-found: error
