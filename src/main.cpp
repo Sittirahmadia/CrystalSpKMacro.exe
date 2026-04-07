@@ -344,17 +344,19 @@ static void runMacroSequence(int idx) {
     else if (d.id == "da") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
+        // === FIRST ANCHOR ===
         // 1. anchor → rclick (place 1st)
         keyPress(a); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
         // 2. glowstone → rclick (charge 1st)
         keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 3. anchor → rclick (detonate 1st — rclick charged anchor = explode)
-        keyPress(a); preciseSleep(switchGap); rClick();
-        // 4. rClick immediately (place 2nd at blast spot — still on anchor)
-        preciseSleep(20); rClick(); preciseSleep(stepGap);
+        // 3. EXPLODE SLOT → rclick (detonate 1st)
+        keyPress(det); preciseSleep(switchGap); rClick();
+        // === SECOND ANCHOR (immediately after explosion) ===
+        // 4. anchor → rclick (place 2nd at blast spot)
+        keyPress(a); preciseSleep(std::max(30, stepGap)); rClick(); preciseSleep(stepGap);
         // 5. glowstone → rclick (charge 2nd)
         keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 6. explode → rclick (detonate 2nd)
+        // 6. EXPLODE SLOT → rclick (detonate 2nd)
         keyPress(det); preciseSleep(switchGap); rClick();
     }
     else if (d.id == "ap") {
