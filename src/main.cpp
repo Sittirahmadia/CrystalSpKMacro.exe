@@ -344,20 +344,17 @@ static void runMacroSequence(int idx) {
     else if (d.id == "da") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
-        // === FIRST ANCHOR ===
-        // 1. Place anchor
-        keyPress(a);   preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 2. Charge with glowstone
-        keyPress(g);   preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 3. Detonate (switch to anchor/explode slot → rclick charged anchor)
-        keyPress(det); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // === SECOND ANCHOR (at explosion spot) ===
-        // 4. Place anchor immediately (already on anchor slot if det==a, otherwise switch)
-        if (det != a) { keyPress(a); preciseSleep(switchGap); }
-        rClick(); preciseSleep(stepGap);
-        // 5. Charge with glowstone
-        keyPress(g);   preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 6. Detonate second
+        // 1. anchor → rclick (place 1st)
+        keyPress(a); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // 2. glowstone → rclick (charge 1st)
+        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // 3. anchor → rclick (detonate 1st — rclick charged anchor = explode)
+        keyPress(a); preciseSleep(switchGap); rClick();
+        // 4. rClick immediately (place 2nd at blast spot — still on anchor)
+        preciseSleep(20); rClick(); preciseSleep(stepGap);
+        // 5. glowstone → rclick (charge 2nd)
+        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
+        // 6. explode → rclick (detonate 2nd)
         keyPress(det); preciseSleep(switchGap); rClick();
     }
     else if (d.id == "ap") {
