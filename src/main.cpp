@@ -334,12 +334,16 @@ static void runMacroSequence(int idx) {
     if (d.id == "sa") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
-        // 1. Switch to anchor → wait for MC to register → place
-        keyPress(a); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 2. Switch to glowstone → wait → charge
-        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 3. Switch to detonate slot → wait → explode
-        keyPress(det); preciseSleep(switchGap); rClick();
+        // Increasing switch gaps per step to guarantee correct ordering.
+        // Anchor gets lowest (it's first, nothing can race it).
+        // Glowstone gets higher (must not fire before anchor registers).
+        // Explode gets highest (must not fire before glowstone registers).
+        // 1. Switch to anchor → 40ms → place
+        keyPress(a); preciseSleep(40); rClick(); preciseSleep(35);
+        // 2. Switch to glowstone → 45ms → charge
+        keyPress(g); preciseSleep(45); rClick(); preciseSleep(40);
+        // 3. Switch to explode slot → 50ms → detonate
+        keyPress(det); preciseSleep(50); rClick();
     }
     else if (d.id == "da") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
