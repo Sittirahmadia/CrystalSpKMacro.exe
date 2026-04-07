@@ -334,13 +334,14 @@ static void runMacroSequence(int idx) {
     if (d.id == "sa") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
-        // All gaps >= 55ms (> 1 MC tick = 50ms) — prevents glowstone-before-anchor bug.
+        // CRITICAL: All keyPress→rClick gaps must be 80ms to ensure slot change
+        // is fully processed before the action fires. Prevents glowstone-before-anchor.
         // 1. anchor → place anchor
-        keyPress(a); preciseSleep(55); rClick(); preciseSleep(40);
+        keyPress(a); preciseSleep(80); rClick(); preciseSleep(40);
         // 2. glowstone → charge anchor
-        keyPress(g); preciseSleep(55); rClick(); preciseSleep(40);
+        keyPress(g); preciseSleep(80); rClick(); preciseSleep(40);
         // 3. det/anchor → explode (right-click a charged anchor = explode)
-        keyPress(det); preciseSleep(55); rClick();
+        keyPress(det); preciseSleep(80); rClick();
     }
     else if (d.id == "da") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
@@ -352,18 +353,18 @@ static void runMacroSequence(int idx) {
         // 4. anchor STILL SELECTED → place 2nd immediately (ASAP, in air)
         // 5. glowstone → charge 2nd
         // 6. det/anchor → explode 2nd
-        // All slot-switch → click gaps >= 55ms to prevent wrong-item bug.
+        // CRITICAL: All slot-switch → click gaps = 80ms to prevent glowstone-first bug.
 
         // === FIRST ANCHOR ===
-        keyPress(a); preciseSleep(55); rClick(); preciseSleep(40);
-        keyPress(g); preciseSleep(55); rClick(); preciseSleep(40);
+        keyPress(a); preciseSleep(80); rClick(); preciseSleep(40);
+        keyPress(g); preciseSleep(80); rClick(); preciseSleep(40);
         // Explode = right-click while anchor slot is selected
-        keyPress(a); preciseSleep(55); rClick();
+        keyPress(a); preciseSleep(80); rClick();
         // === SECOND ANCHOR — NO slot switch, anchor already held ===
         preciseSleep(12); rClick(); preciseSleep(40);
         // === CHARGE + EXPLODE 2nd ===
-        keyPress(g); preciseSleep(55); rClick(); preciseSleep(40);
-        keyPress(det); preciseSleep(55); rClick();
+        keyPress(g); preciseSleep(80); rClick(); preciseSleep(40);
+        keyPress(det); preciseSleep(80); rClick();
     }
     else if (d.id == "ap") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode"), p = getSlotVK(e,"pearl");
