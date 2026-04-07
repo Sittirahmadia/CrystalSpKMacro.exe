@@ -334,34 +334,36 @@ static void runMacroSequence(int idx) {
     if (d.id == "sa") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
-        // Increasing switch gaps per step to guarantee correct ordering.
-        // Anchor gets lowest (it's first, nothing can race it).
-        // Glowstone gets higher (must not fire before anchor registers).
-        // Explode gets highest (must not fire before glowstone registers).
-        // 1. Switch to anchor → 40ms → place
-        keyPress(a); preciseSleep(40); rClick(); preciseSleep(35);
-        // 2. Switch to glowstone → 45ms → charge
-        keyPress(g); preciseSleep(45); rClick(); preciseSleep(40);
-        // 3. Switch to explode slot → 50ms → detonate
-        keyPress(det); preciseSleep(50); rClick();
+        // All gaps >= 55ms (> 1 MC tick = 50ms) — prevents glowstone-before-anchor bug.
+        // 1. anchor → place anchor
+        keyPress(a); preciseSleep(55); rClick(); preciseSleep(40);
+        // 2. glowstone → charge anchor
+        keyPress(g); preciseSleep(55); rClick(); preciseSleep(40);
+        // 3. det/anchor → explode (right-click a charged anchor = explode)
+        keyPress(det); preciseSleep(55); rClick();
     }
     else if (d.id == "da") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
+        // Correct DA sequence:
+        // 1. anchor  → place 1st anchor
+        // 2. glowstone → charge 1st
+        // 3. anchor  → explode 1st (right-clicking charged anchor = explode)
+        // 4. anchor STILL SELECTED → place 2nd immediately (ASAP, in air)
+        // 5. glowstone → charge 2nd
+        // 6. det/anchor → explode 2nd
+        // All slot-switch → click gaps >= 55ms to prevent wrong-item bug.
+
         // === FIRST ANCHOR ===
-        // 1. anchor → rclick (place 1st)
-        keyPress(a); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 2. glowstone → rclick (charge 1st)
-        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 3. EXPLODE SLOT → rclick (detonate 1st)
-        keyPress(det); preciseSleep(switchGap); rClick();
-        // === SECOND ANCHOR (immediately after explosion) ===
-        // 4. anchor → rclick (place 2nd at blast spot)
-        keyPress(a); preciseSleep(std::max(30, stepGap)); rClick(); preciseSleep(stepGap);
-        // 5. glowstone → rclick (charge 2nd)
-        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(stepGap);
-        // 6. EXPLODE SLOT → rclick (detonate 2nd)
-        keyPress(det); preciseSleep(switchGap); rClick();
+        keyPress(a); preciseSleep(55); rClick(); preciseSleep(40);
+        keyPress(g); preciseSleep(55); rClick(); preciseSleep(40);
+        // Explode = right-click while anchor slot is selected
+        keyPress(a); preciseSleep(55); rClick();
+        // === SECOND ANCHOR — NO slot switch, anchor already held ===
+        preciseSleep(12); rClick(); preciseSleep(40);
+        // === CHARGE + EXPLODE 2nd ===
+        keyPress(g); preciseSleep(55); rClick(); preciseSleep(40);
+        keyPress(det); preciseSleep(55); rClick();
     }
     else if (d.id == "ap") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode"), p = getSlotVK(e,"pearl");
@@ -445,6 +447,45 @@ static void runMacroSequence(int idx) {
     else if (d.id == "la") { keyPress(getSlotVK(e,"lava")); preciseSleep(switchGap); rClick(); }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  HOLD / LOOP MODE STATE
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct ModeState {
+    std::atomic<bool> loopRunning{false};
+    HANDLE            thread = nullptr;
+};
+static ModeState g_modeState[MACRO_COUNT];
+
+struct ModeThreadParam { int idx; };
+
+static DWORD WINAPI modeLoopThread(LPVOID param) {
+    auto* p = (ModeThreadParam*)param;
+    int idx = p->idx;
+    delete p;
+    timeBeginPeriod(1);
+    while (g_modeState[idx].loopRunning.load()) {
+        runMacroSequence(idx);
+        int gap = std::max(20, g_config[idx].delay);
+        // Check mid-sleep so stop is responsive
+        for (int t = 0; t < gap && g_modeState[idx].loopRunning.load(); t++)
+            preciseSleep(1);
+    }
+    timeEndPeriod(1);
+    g_macroRunning = false;
+    return 0;
+}
+
+static void stopModeLoop(int idx) {
+    g_modeState[idx].loopRunning = false;
+    if (g_modeState[idx].thread) {
+        WaitForSingleObject(g_modeState[idx].thread, 600);
+        CloseHandle(g_modeState[idx].thread);
+        g_modeState[idx].thread = nullptr;
+    }
+    g_macroRunning = false;
+}
+
 static DWORD WINAPI macroThread(LPVOID param) {
     int idx = (int)(intptr_t)param;
     timeBeginPeriod(1);
@@ -455,11 +496,42 @@ static DWORD WINAPI macroThread(LPVOID param) {
     return 0;
 }
 
+// Track if a loop-mode macro is currently active (for toggle)
+static bool g_loopToggled[MACRO_COUNT] = {};
+
 static void executeMacro(int idx) {
     if (g_focusLock && !g_mcFocused) return;
-    if (g_macroRunning.exchange(true)) return;
-    HANDLE h = CreateThread(nullptr, 0, macroThread, (LPVOID)(intptr_t)idx, 0, nullptr);
-    if (h) CloseHandle(h); else g_macroRunning = false;
+    int mode = g_config[idx].mode;
+
+    if (mode == MODE_SINGLE) {
+        // One-shot: fire once
+        if (g_macroRunning.exchange(true)) return;
+        HANDLE h = CreateThread(nullptr, 0, macroThread, (LPVOID)(intptr_t)idx, 0, nullptr);
+        if (h) CloseHandle(h); else g_macroRunning = false;
+
+    } else if (mode == MODE_HOLD) {
+        // Hold: called on button-down — start loop; button-up will call stopModeLoop
+        if (g_modeState[idx].loopRunning.load()) return; // already running
+        g_macroRunning = true;
+        g_modeState[idx].loopRunning = true;
+        auto* p = new ModeThreadParam{idx};
+        HANDLE h = CreateThread(nullptr, 0, modeLoopThread, p, 0, nullptr);
+        g_modeState[idx].thread = h;
+
+    } else if (mode == MODE_LOOP) {
+        // Toggle: first trigger = start, second trigger = stop
+        if (!g_loopToggled[idx]) {
+            g_loopToggled[idx] = true;
+            g_macroRunning = true;
+            g_modeState[idx].loopRunning = true;
+            auto* p = new ModeThreadParam{idx};
+            HANDLE h = CreateThread(nullptr, 0, modeLoopThread, p, 0, nullptr);
+            g_modeState[idx].thread = h;
+        } else {
+            g_loopToggled[idx] = false;
+            stopModeLoop(idx);
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1013,10 +1085,9 @@ static LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lPara
                 if (g_captureSlot == -1) {
                     g_config[g_captureIdx].hotkey = mouseBtn;
                 } else {
-                    // Mouse buttons as slot keys — store as "Mouse4" etc.
                     auto& sv = g_config[g_captureIdx].slotValues;
                     auto& sd = MACROS[g_captureIdx].slots[g_captureSlot];
-                    sv[sd.key] = VKName(mouseBtn); // "Mouse4", "Mouse5" etc.
+                    sv[sd.key] = VKName(mouseBtn);
                 }
                 g_capturing = false;
                 registerAllHotkeys();
@@ -1029,6 +1100,26 @@ static LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lPara
                 if (g_config[i].active && g_config[i].hotkey == mouseBtn) {
                     executeMacro(i);
                     break;
+                }
+            }
+        }
+
+        // Handle HOLD mode mouse button release
+        {
+            int releasedBtn = 0;
+            if (wParam == WM_MBUTTONUP) releasedBtn = -3;
+            else if (wParam == WM_XBUTTONUP) {
+                WORD xBtn = HIWORD(ms->mouseData);
+                if (xBtn == XBUTTON1) releasedBtn = -4;
+                else if (xBtn == XBUTTON2) releasedBtn = -5;
+            }
+            if (releasedBtn != 0) {
+                for (int i = 0; i < MACRO_COUNT; i++) {
+                    if (g_config[i].active && g_config[i].hotkey == releasedBtn
+                        && g_config[i].mode == MODE_HOLD) {
+                        stopModeLoop(i);
+                        break;
+                    }
                 }
             }
         }
@@ -1136,6 +1227,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         if (now - lastFocusCheck > 200) {
             updateMcFocus();
             lastFocusCheck = now;
+
+            // Poll for keyboard Hold-mode key releases
+            for (int i = 0; i < MACRO_COUNT; i++) {
+                if (!g_config[i].active) continue;
+                if (g_config[i].mode != MODE_HOLD) continue;
+                if (!g_modeState[i].loopRunning.load()) continue;
+                int hk = g_config[i].hotkey;
+                if (hk <= 0) continue; // mouse buttons handled by hook
+                if (!(GetAsyncKeyState(hk) & 0x8000)) {
+                    stopModeLoop(i);
+                }
+            }
         }
 
         // Handle resize
