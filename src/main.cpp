@@ -334,20 +334,20 @@ static void runMacroSequence(int idx) {
     if (d.id == "sa") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
-        int switchGap = std::max(10, e.delay);
-        // Uses delay setting as switch gap. User tunes their PC's hotkey speed.
+        // BLOCKING slot switch: Use 150ms between keyPress and rClick to ensure
+        // Minecraft's hotbar actually updates before the click fires.
         // 1. anchor → place anchor
-        keyPress(a); preciseSleep(switchGap); rClick(); preciseSleep(30);
+        keyPress(a); preciseSleep(150); rClick(); preciseSleep(30);
         // 2. glowstone → charge anchor
-        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(30);
+        keyPress(g); preciseSleep(150); rClick(); preciseSleep(30);
         // 3. det/anchor → explode (right-click a charged anchor = explode)
-        keyPress(det); preciseSleep(switchGap); rClick();
+        keyPress(det); preciseSleep(150); rClick();
     }
     else if (d.id == "da") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode");
         uint16_t det = x ? x : a;
-        int switchGap = std::max(10, e.delay);
-        // Correct DA sequence (delay = switch gap):
+        // BLOCKING slot switch: 150ms between keyPress and rClick for every step.
+        // Correct DA sequence:
         // 1. anchor  → place 1st anchor
         // 2. glowstone → charge 1st
         // 3. anchor  → explode 1st (right-clicking charged anchor = explode)
@@ -356,15 +356,15 @@ static void runMacroSequence(int idx) {
         // 6. det/anchor → explode 2nd
 
         // === FIRST ANCHOR ===
-        keyPress(a); preciseSleep(switchGap); rClick(); preciseSleep(30);
-        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(30);
-        // Explode = right-click while anchor slot is selected
-        keyPress(a); preciseSleep(switchGap); rClick();
+        keyPress(a); preciseSleep(150); rClick(); preciseSleep(30);
+        keyPress(g); preciseSleep(150); rClick(); preciseSleep(30);
+        // Explode = right-click while anchor slot is selected (BLOCKING switch)
+        keyPress(a); preciseSleep(150); rClick();
         // === SECOND ANCHOR — NO slot switch, anchor already held ===
         preciseSleep(12); rClick(); preciseSleep(30);
         // === CHARGE + EXPLODE 2nd ===
-        keyPress(g); preciseSleep(switchGap); rClick(); preciseSleep(30);
-        keyPress(det); preciseSleep(switchGap); rClick();
+        keyPress(g); preciseSleep(150); rClick(); preciseSleep(30);
+        keyPress(det); preciseSleep(150); rClick();
     }
     else if (d.id == "ap") {
         uint16_t a = getSlotVK(e,"anchor"), g = getSlotVK(e,"glowstone"), x = getSlotVK(e,"explode"), p = getSlotVK(e,"pearl");
